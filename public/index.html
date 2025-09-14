@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serverless NDVI Calculator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        #map { height: 300px; border-radius: 0.5rem; z-index: 10; }
+        .leaflet-pane, .leaflet-control { z-index: 10 !important; }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div class="w-full max-w-md bg-white rounded-xl shadow-lg p-6 md:p-8 m-4">
+        <div class="text-center mb-6">
+            <h1 class="text-2xl font-bold text-gray-800">Serverless NDVI Calculator</h1>
+            <p class="text-gray-500 mt-1">Select a point to find its latest vegetation index via GEE.</p>
+        </div>
+
+        <div id="map" class="mb-4 shadow-md"></div>
+
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div>
+                <label for="latitude" class="block text-sm font-medium text-gray-700">Latitude</label>
+                <input type="text" id="latitude" readonly class="mt-1 block w-full px-3 py-2 bg-gray-100 border rounded-md">
+            </div>
+            <div>
+                <label for="longitude" class="block text-sm font-medium text-gray-700">Longitude</label>
+                <input type="text" id="longitude" readonly class="mt-1 block w-full px-3 py-2 bg-gray-100 border rounded-md">
+            </div>
+        </div>
+
+        <button id="getNdviBtn" class="w-full bg-indigo-600 text-white font-semibold py-3 px-4 rounded-lg shadow-md hover:bg-indigo-700 transition flex items-center justify-center">
+            <svg id="loading-spinner" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span id="button-text">Identify Most Recent NDVI</span>
+        </button>
+
+        <div id="results" class="mt-6 hidden">
+            <div class="bg-gray-50 p-4 rounded-lg border">
+                <h3 class="text-lg font-semibold text-gray-800 mb-3">Analysis Results</h3>
+                <div class="flex justify-between mb-2"><span class="text-gray-600">Image Source:</span><span class="font-medium text-gray-900">Sentinel-2</span></div>
+                <div class="flex justify-between mb-2"><span class="text-gray-600">Image Date:</span><span id="result-date" class="font-medium text-gray-900"></span></div>
+                <div class="flex justify-between mb-4"><span class="text-gray-600">NDVI Value:</span><span id="result-ndvi" class="font-bold text-2xl text-indigo-600"></span></div>
+                <div class="w-full bg-gray-200 rounded-full h-4 mb-2 shadow-inner">
+                    <div id="ndvi-bar" class="h-4 rounded-full transition-all duration-500" style="width: 0%;"></div>
+                </div>
+                <div class="flex justify-between text-xs text-gray-500"><span>Barren</span><span>Moderate</span><span>Healthy</span></div>
+                <p id="result-interpretation" class="mt-4 text-center text-gray-700 bg-indigo-50 p-3 rounded-md"></p>
+            </div>
+        </div>
+    </div>
+    <script>
+        const latInput = document.getElementById('latitude');
+        const lonInput = document.getElementById('longitude');
+        const getNdviBtn = document.getElementById('getNdviBtn');
+        const resultsDiv = document.getElementById('results');
+        const resultDate = document.getElementById('result-date');
+        const resultNdvi = document.getElementById('result-ndvi');
+        const ndviBar = document.getElementById('ndvi-bar');
+        const resultInterpretation = document.getElementById('result-interpretation');
+        const loadingSpinner = document.getElementById('loading-spinner');
+        const buttonText = document.getElementById('button-text');
+
+        const initialCoords = [43.2220, 76.8512]; // Default to Almaty, Kazakhstan
+        const map = L.map('map').setView(initialCoords, 11);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+        let marker = L.marker(initialCoords, { draggable: true }).addTo(map);
+
+        latInput.value = initialCoords[0].toFixed(6);
+        lonInput.value = initialCoords[1].toFixed(6);
+
+        marker.on('dragend', (event) => {
+            const position = marker.getLatLng();
+            latInput.value = position.lat.toFixed(6);
+            lonInput.value = position.lng.toFixed(6);
+            map.panTo(position);
+            resultsDiv.classList.add('hidden');
+        });
+
+        getNdviBtn.addEventListener('click', () => {
+            fetchNdviData(latInput.value, lonInput.value);
+        });
+
+        function fetchNdviData(lat, lon) {
+            loadingSpinner.classList.remove('hidden');
+            buttonText.innerText = 'Analyzing...';
+            getNdviBtn.disabled = true;
+            resultsDiv.classList.add('hidden');
+
+            // IMPORTANT: This relative URL works for both local dev and production
+            const apiUrl = `/api/get-ndvi?lat=${lat}&lon=${lon}`;
+
+            fetch(apiUrl)
+                .then(response => response.ok ? response.json() : response.json().then(err => { throw new Error(err.error) }))
+                .then(data => data.ndvi !== null ? displayResults(data) : Promise.reject('NDVI value is null.'))
+                .catch(error => {
+                    resultsDiv.classList.remove('hidden');
+                    resultInterpretation.textContent = `Error: ${error.message}`;
+                    resultDate.textContent = 'N/A';
+                    resultNdvi.textContent = 'Error';
+                    ndviBar.style.width = '0%';
+                })
+                .finally(() => {
+                    loadingSpinner.classList.add('hidden');
+                    buttonText.innerText = 'Identify Most Recent NDVI';
+                    getNdviBtn.disabled = false;
+                });
+        }
+
+        function displayResults(data) {
+            resultDate.textContent = data.date;
+            resultNdvi.textContent = data.ndvi.toFixed(4);
+            updateNdviBar(data.ndvi);
+            updateInterpretation(data.ndvi);
+            resultsDiv.classList.remove('hidden');
+        }
+
+        function updateNdviBar(ndvi) {
+            const percent = Math.max(0, Math.min(100, ((ndvi + 0.2) / 1.2) * 100));
+            ndviBar.style.width = `${percent}%`;
+            if (ndvi < 0.2) ndviBar.style.backgroundColor = '#a52a2a'; // Brown
+            else if (ndvi < 0.4) ndviBar.style.backgroundColor = '#facc15'; // Yellow
+            else if (ndvi < 0.6) ndviBar.style.backgroundColor = '#84cc16'; // Light Green
+            else ndviBar.style.backgroundColor = '#16a34a'; // Dark Green
+        }
+
+        function updateInterpretation(ndvi) {
+            let text = 'Indicates dense and healthy vegetation.';
+            if (ndvi < 0.1) text = 'Likely water, snow, or clouds.';
+            else if (ndvi < 0.2) text = 'Indicates barren land, rock, or sand.';
+            else if (ndvi < 0.4) text = 'Represents grasslands or sparse vegetation.';
+            else if (ndvi < 0.6) text = 'Suggests moderate vegetation density, like crops.';
+            resultInterpretation.textContent = text;
+        }
+    </script>
+</body>
+</html>

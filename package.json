@@ -1,0 +1,9 @@
+{
+  "name": "ndvi-vercel-app",
+  "version": "1.0.0",
+  "description": "Serverless NDVI calculator with GEE and Vercel",
+  "main": "api/get-ndvi.js",
+  "dependencies": {
+    "@google/earthengine": "^0.1.393"
+  }
+}

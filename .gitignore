@@ -1,0 +1,15 @@
+Dependency directories
+node_modules/
+
+Local environment variables
+.env
+.env.local
+
+Secret files
+privatekey.json
+
+Vercel build output
+.vercel/
+
+Log files
+*.log
